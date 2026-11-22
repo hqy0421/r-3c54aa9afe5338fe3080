@@ -216,4 +216,89 @@ public class TestCommandLineApp {
         assertEquals(expectedJson, resultJson);
     }
 
+    private static Table syntheticTable(int pageNumber, String[]... rows) {
+        Table table = new Table(new technology.tabula.extractors.BasicExtractionAlgorithm());
+        table.setPageNumber(pageNumber);
+        for (int r = 0; r < rows.length; r++) {
+            for (int c = 0; c < rows[r].length; c++) {
+                technology.tabula.TextElement element = new technology.tabula.TextElement(
+                        0, 0, 0, 0, null, 0, rows[r][c], 0);
+                table.add(new TextChunk(element), r, c);
+            }
+        }
+        return table;
+    }
+
+    @Test
+    public void testReconcileWritesOnlyDetails() throws ParseException, IOException {
+        CommandLine cmd = new DefaultParser().parse(CommandLineApp.buildOptions(), new String[]{
+                "unused.pdf", "-p", "1", "-f", "CSV",
+                "--reconcile", "0,1,2,DETAIL,SUBTOTAL,TOTAL"
+        });
+        CommandLineApp app = new CommandLineApp(new StringBuilder(), cmd);
+
+        Table table = syntheticTable(1,
+                new String[]{"DETAIL", "USD", "10.00"},
+                new String[]{"DETAIL", "EUR", "5.00"},
+                new String[]{"SUBTOTAL", "USD", "10.00"},
+                new String[]{"SUBTOTAL", "EUR", "5.00"},
+                new String[]{"TOTAL", "USD", "10.00"},
+                new String[]{"TOTAL", "EUR", "5.00"});
+
+        StringBuilder out = new StringBuilder();
+        app.writeTables(java.util.Collections.singletonList(table), out);
+        assertEquals("DETAIL,USD,10.00\r\nDETAIL,EUR,5.00\r\n", out.toString());
+    }
+
+    @Test
+    public void testReconcileFailureThrows() throws ParseException, IOException {
+        CommandLine cmd = new DefaultParser().parse(CommandLineApp.buildOptions(), new String[]{
+                "unused.pdf", "-p", "1", "-f", "CSV",
+                "--reconcile", "0,1,2,DETAIL,SUBTOTAL,TOTAL"
+        });
+        CommandLineApp app = new CommandLineApp(new StringBuilder(), cmd);
+
+        Table table = syntheticTable(2,
+                new String[]{"DETAIL", "USD", "10.00"},
+                new String[]{"SUBTOTAL", "USD", "12.00"},
+                new String[]{"TOTAL", "USD", "12.00"});
+
+        StringBuilder out = new StringBuilder();
+        try {
+            app.writeTables(java.util.Collections.singletonList(table), out);
+            fail("expected ReconciliationException");
+        } catch (technology.tabula.reconciliation.ReconciliationException e) {
+            assertEquals(0, out.length());
+            assertTrue(e.getMessage().contains("page 2"));
+            assertTrue(e.getMessage().contains("USD"));
+        }
+    }
+
+    @Test
+    public void testReconcileRequiresCsvOutput() {
+        try {
+            CommandLine cmd = new DefaultParser().parse(CommandLineApp.buildOptions(), new String[]{
+                    "unused.pdf", "-p", "1", "-f", "JSON",
+                    "--reconcile", "0,1,2,DETAIL,SUBTOTAL,TOTAL"
+            });
+            new CommandLineApp(new StringBuilder(), cmd);
+            fail("expected ParseException");
+        } catch (ParseException expected) {
+            assertTrue(expected.getMessage().contains("CSV"));
+        }
+    }
+
+    @Test
+    public void testReconcileRejectsMalformedSpec() {
+        try {
+            CommandLine cmd = new DefaultParser().parse(CommandLineApp.buildOptions(), new String[]{
+                    "unused.pdf", "-p", "1", "--reconcile", "0,1,2"
+            });
+            new CommandLineApp(new StringBuilder(), cmd);
+            fail("expected ParseException");
+        } catch (ParseException expected) {
+            // ok
+        }
+    }
+
 }

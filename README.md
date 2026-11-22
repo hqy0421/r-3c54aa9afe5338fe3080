@@ -71,6 +71,43 @@ Tabula helps you extract tables from PDFs
 
 It also includes a debugging tool, run `java -cp ./target/tabula-1.0.5-jar-with-dependencies.jar technology.tabula.debug.Debug -h` for the available options.
 
+### Reconciling mixed-currency statements
+
+Statements that print per-currency subtotals and totals can be checked (and cleaned) while they are exported as CSV. This is opt-in; without `--reconcile` the CSV output is unchanged.
+
+```
+java -jar target/tabula-1.0.6-jar-with-dependencies.jar statement.pdf -p all \
+  --reconcile 0,1,2,DETAIL,SUBTOTAL,TOTAL
+```
+
+The `--reconcile` value is
+`rowTypeColumn,currencyColumn,amountColumn,detailMarker,subtotalMarker,totalMarker`,
+with zero-based column indexes. Markers are matched case-insensitively. Leave
+`detailMarker` empty to treat every accounted row that is not a subtotal or total
+as a detail row; when it is supplied, rows whose type matches none of the three
+markers are ignored (headers, notes, ...).
+
+For each table independently, amounts are summed per currency as exact decimal
+fixed-point values (`BigDecimal`, never floating point):
+
+- a **subtotal** must equal the detail rows for that currency since the previous
+  subtotal of that currency, and that accumulated segment is then cleared;
+- a **total** must equal every detail row of that currency in the whole table;
+- currencies may be interleaved, and each currency present on the table must
+  have exactly one closing total;
+- every detail row must have passed through a subtotal by the end of the table.
+
+If an amount is not a valid decimal amount, a subtotal or total does not match,
+a segment is left unclosed, a currency is missing its total, or a currency
+reappears after its total, the run fails: the page number, row number, and
+currency of every problem are reported on stderr, nothing is written, and the
+process exits with status 2. On success only the detail rows are written, in
+their original order; subtotal and total rows are never emitted.
+
+The same functionality is available programmatically with
+`CSVWriter.reconciling(ReconciliationConfig)` or `Reconciler` directly.
+
+
 You can also integrate `tabula-java` with any JVM language. For Java examples, see the [`tests`](src/test/java/technology/tabula/) folder.
 
 JVM start-up time is a lot of the cost of the `tabula` command, so if you're trying to extract many tables from PDFs, you have a few options for speeding it up:

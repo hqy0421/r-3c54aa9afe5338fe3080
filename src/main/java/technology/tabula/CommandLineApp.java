@@ -22,6 +22,8 @@ import technology.tabula.detectors.DetectionAlgorithm;
 import technology.tabula.detectors.NurminenDetectionAlgorithm;
 import technology.tabula.extractors.BasicExtractionAlgorithm;
 import technology.tabula.extractors.SpreadsheetExtractionAlgorithm;
+import technology.tabula.reconciliation.ReconciliationConfig;
+import technology.tabula.reconciliation.ReconciliationException;
 import technology.tabula.writers.CSVWriter;
 import technology.tabula.writers.JSONWriter;
 import technology.tabula.writers.TSVWriter;
@@ -45,6 +47,8 @@ public class CommandLineApp {
     private OutputFormat outputFormat;
     private String password;
     private TableExtractor tableExtractor;
+    private ReconciliationConfig reconciliationConfig;
+    private boolean silent;
 
     public CommandLineApp(Appendable defaultOutput, CommandLine line) throws ParseException {
         this.defaultOutput = defaultOutput;
@@ -52,6 +56,12 @@ public class CommandLineApp {
         this.pages = CommandLineApp.whichPages(line);
         this.outputFormat = CommandLineApp.whichOutputFormat(line);
         this.tableExtractor = CommandLineApp.createExtractor(line);
+        this.reconciliationConfig = CommandLineApp.whichReconciliationConfig(line);
+        this.silent = line.hasOption('i');
+
+        if (this.reconciliationConfig != null && this.outputFormat != OutputFormat.CSV) {
+            throw new ParseException("reconciliation mode is only available for CSV output");
+        }
 
         if (line.hasOption('s')) {
             this.password = line.getOptionValue('s');
@@ -74,12 +84,26 @@ public class CommandLineApp {
                 System.exit(0);
             }
 
-            new CommandLineApp(System.out, line).extractTables(line);
+            CommandLineApp app = new CommandLineApp(System.out, line);
+            try {
+                app.extractTables(line);
+            } catch (ReconciliationException e) {
+                app.reportReconciliationFailure(e);
+                System.exit(2);
+            }
         } catch (ParseException exp) {
             System.err.println("Error: " + exp.getMessage());
             System.exit(1);
         }
         System.exit(0);
+    }
+
+    private void reportReconciliationFailure(ReconciliationException e) {
+        if (this.silent) {
+            return;
+        }
+        System.err.println("Reconciliation failed; no detail rows were written.");
+        System.err.println(e.getMessage());
     }
 
     public void extractTables(CommandLine line) throws ParseException {
@@ -253,6 +277,17 @@ public class CommandLineApp {
         return Utils.parsePagesOption(pagesOption);
     }
 
+    private static ReconciliationConfig whichReconciliationConfig(CommandLine line) throws ParseException {
+        if (!line.hasOption("reconcile")) {
+            return null;
+        }
+        try {
+            return ReconciliationConfig.fromSpec(line.getOptionValue("reconcile"));
+        } catch (IllegalArgumentException e) {
+            throw new ParseException("Invalid --reconcile value: " + e.getMessage());
+        }
+    }
+
     private static ExtractionMethod whichExtractionMethod(CommandLine line) {
         // -r/--spreadsheet [deprecated; use -l] or -l/--lattice
         if (line.hasOption('r') || line.hasOption('l')) {
@@ -364,6 +399,17 @@ public class CommandLineApp {
                 .hasArg()
                 .argName("PAGES")
                 .build());
+        o.addOption(Option.builder()
+                .longOpt("reconcile")
+                .desc("Enable CSV reconciliation mode for statements with mixed currencies. "
+                        + "Value: rowTypeColumn,currencyColumn,amountColumn,detailMarker,subtotalMarker,totalMarker "
+                        + "(zero-based column indexes; leave detailMarker empty to treat any row that is not "
+                        + "a subtotal or total as a detail row). Only detail rows are written, after every "
+                        + "currency subtotal and total has been checked with exact decimal arithmetic. "
+                        + "On any inconsistency nothing is written and the problems are reported on stderr.")
+                .hasArg()
+                .argName("SPEC")
+                .build());
 
         return o;
     }
@@ -459,11 +505,13 @@ public class CommandLineApp {
         }
     }
 
-    private void writeTables(List<Table> tables, Appendable out) throws IOException {
+    void writeTables(List<Table> tables, Appendable out) throws IOException {
         Writer writer = null;
         switch (outputFormat) {
             case CSV:
-                writer = new CSVWriter();
+                writer = this.reconciliationConfig == null
+                        ? new CSVWriter()
+                        : CSVWriter.reconciling(this.reconciliationConfig);
                 break;
             case JSON:
                 writer = new JSONWriter();
